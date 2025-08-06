@@ -22,9 +22,10 @@ omnetpp (only an example):
 
 .. code-block:: shell
 
-    ./build/qemu-riscv64 -plugin /nfs/home/zhaozhi/workspace/qemu/build/contrib/plugins/libhotblocks.so \
-    -d plugin /nfs/home/zhaozhi/workspace/omnetpp_buildres/raw_v/471.omnetpp \
-    -f /nfs/home/zhaozhi/workspace/rvv-compare/vector/cpu2006v99/benchspec/CPU2006/471.omnetpp/data/test/input/omnetpp.ini \
+    ./build/qemu-riscv64 -plugin ./build/contrib/plugins/libhotblocks.so \
+    -d plugin \
+    471.omnetpp(your elf) \
+    -f omnetpp.ini(your input) \
     2> ./rvvplugin_utils/plugin_rpt.txt 3> ./rvvplugin_utils/plugin_vinstrace.txt \
 
     cd rvvplugin_utils
