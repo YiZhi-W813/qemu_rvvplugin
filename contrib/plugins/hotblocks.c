@@ -27,17 +27,8 @@ static FILE *fd3_log_fp = NULL;
 static GString *fd3_buffer = NULL;
 static qemu_plugin_u64 insn_count;
 static qemu_plugin_u64 vinsn_count;
-typedef struct {
-    char *mnemonic;
-} vector_insn_info_t;
-/*
- * Counting Structure
- *
- * The internals of the TCG are not exposed to plugins so we can only
- * get the starting PC for each block. We cheat this slightly by
- * checking the number of instructions as well to help
- * differentiate.
- */
+static GHashTable *mnemonic_counter = NULL;
+
 typedef struct {
     uint64_t start_addr;
     struct qemu_plugin_scoreboard *exec_count;
@@ -55,15 +46,29 @@ static void vcpu_common_insn_cb(unsigned int cpu_index, void *udata)
 static void exec_vector_insn_cb(unsigned int vcpu_index, void *userdata)
 {
     qemu_plugin_u64_add(vinsn_count, vcpu_index, 1);
-    const char *mnemonic = (const char *)userdata;
-
-    if (mnemonic) {
-        // 拼接日志到缓冲
-        g_string_append_printf(fd3_buffer, "%s\n", mnemonic);
-    }
-
     qemu_plugin_u64_add(insn_count, vcpu_index, 1);
+
+    const char *full_disas = (const char *)userdata;
+    if (full_disas) {
+        // 提取助记符（第一个空格前的 token）
+        const char *end = strchr(full_disas, ' ');
+        size_t len = end ? (size_t)(end - full_disas) : strlen(full_disas);
+
+        // 创建一个新字符串用于作为 hash 键
+        char *mnemonic = g_strndup(full_disas, len);
+
+        // 哈希统计
+        guint64 *counter = g_hash_table_lookup(mnemonic_counter, mnemonic);
+        if (!counter) {
+            counter = g_new0(guint64, 1);
+            g_hash_table_insert(mnemonic_counter, g_strdup(mnemonic), counter);
+        }
+        (*counter)++;
+
+        g_free(mnemonic); // 注意：g_hash_table_insert 用的是副本
+    }
 }
+
 
 
 static gint cmp_exec_count(gconstpointer a, gconstpointer b, gpointer d)
@@ -139,15 +144,27 @@ static void plugin_exit(qemu_plugin_id_t id, void *p)
     g_hash_table_destroy(hotblocks);
 
     if (fd3_log_fp && fd3_buffer) {
+        GList *keys = g_hash_table_get_keys(mnemonic_counter);
+        keys = g_list_sort(keys, (GCompareFunc)g_strcmp0);
+
+        for (GList *l = keys; l != NULL; l = l->next) {
+            const char *mnemonic = (const char *)l->data;
+            guint64 *count = (guint64 *)g_hash_table_lookup(mnemonic_counter, mnemonic);
+            g_string_append_printf(fd3_buffer, "%s,%" G_GUINT64_FORMAT "\n", mnemonic, *count);
+        }
+        g_list_free(keys);
+
         fwrite(fd3_buffer->str, 1, fd3_buffer->len, fd3_log_fp);
         fclose(fd3_log_fp);
         g_string_free(fd3_buffer, TRUE);
     }
+    g_hash_table_destroy(mnemonic_counter);
 }
 
 static void plugin_init(void)
 {
     hotblocks = g_hash_table_new(exec_count_hash, exec_count_equal);
+    mnemonic_counter = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 }
 
 static void vcpu_tb_exec(unsigned int cpu_index, void *udata)
@@ -157,11 +174,6 @@ static void vcpu_tb_exec(unsigned int cpu_index, void *udata)
                         cpu_index, 1);
 }
 
-/*
- * When do_inline we ask the plugin to increment the counter for us.
- * Otherwise a helper is inserted which calls the vcpu_tb_exec
- * callback.
- */
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
     ExecCount *cnt;
